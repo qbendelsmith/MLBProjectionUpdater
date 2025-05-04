@@ -7543,8 +7543,8 @@ def update_starting_lineups_sheet(excel_path=EXCEL_FILE_PATH, date_str=None):
             lineups_df = standardize_all_player_names(lineups_df, reference_df, 'Player')
             logger.info("Standardized player names in lineup data")
         
-        # Update Excel sheet
-        success = update_excel_data_only(lineups_df, "TodaysStartingLineups")
+        # Update Excel sheet with formula preservation
+        success = update_starting_lineups_with_formulas(excel_path, lineups_df)
         
         if success:
             logger.info(f"Successfully updated TodaysStartingLineups with {len(lineups_df)} entries")
@@ -7555,6 +7555,142 @@ def update_starting_lineups_sheet(excel_path=EXCEL_FILE_PATH, date_str=None):
         
     except Exception as e:
         logger.error(f"Error updating starting lineups sheet: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+    
+def update_starting_lineups_with_formulas(excel_path, lineups_df, sheet_name="TodaysStartingLineups"):
+    """
+    Update TodaysStartingLineups sheet while preserving any existing formulas (like VLOOKUP)
+    
+    Parameters:
+    excel_path (str): Path to the Excel file
+    lineups_df (pandas DataFrame): New lineup data
+    sheet_name (str): Name of the sheet to update
+    
+    Returns:
+    bool: True if successful, False otherwise
+    """
+    logger.info(f"Updating {sheet_name} with formula preservation...")
+    
+    try:
+        # Load the workbook
+        wb = openpyxl.load_workbook(excel_path, keep_vba=True)
+        
+        # Check if the sheet exists
+        if sheet_name not in wb.sheetnames:
+            logger.info(f"Creating new sheet '{sheet_name}'")
+            sheet = wb.create_sheet(sheet_name)
+            
+            # Write headers
+            for col_idx, col_name in enumerate(lineups_df.columns, 1):
+                sheet.cell(row=1, column=col_idx, value=col_name)
+            
+            # Write data
+            for row_idx, row in enumerate(lineups_df.itertuples(index=False), start=2):
+                for col_idx, value in enumerate(row, start=1):
+                    sheet.cell(row=row_idx, column=col_idx, value=value)
+        else:
+            # Get the existing sheet
+            sheet = wb[sheet_name]
+            
+            # Store all existing data and formulas first
+            original_data = {}
+            formula_columns = set()
+            
+            # Check all cells to identify formulas
+            for row in range(1, sheet.max_row + 1):
+                row_data = {}
+                for col in range(1, sheet.max_column + 1):
+                    cell = sheet.cell(row=row, column=col)
+                    is_formula = False
+                    formula_value = None
+                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
+                        is_formula = True
+                        formula_value = cell.value
+                        formula_columns.add(col)
+                    
+                    row_data[col] = {
+                        'value': cell.value,
+                        'is_formula': is_formula,
+                        'formula_value': formula_value
+                    }
+                
+                original_data[row] = row_data
+            
+            logger.info(f"Found formulas in columns: {sorted(formula_columns)}")
+            
+            # Get current headers and map to dataframe columns
+            header_map = {}
+            for col in range(1, sheet.max_column + 1):
+                header = sheet.cell(row=1, column=col).value
+                if header:
+                    header_map[header] = col
+            
+            # Identify which columns to update (those without formulas)
+            data_columns = []
+            for col_name in lineups_df.columns:
+                if col_name in header_map:
+                    col_idx = header_map[col_name]
+                    if col_idx not in formula_columns:
+                        data_columns.append((col_name, col_idx))
+            
+            logger.info(f"Will update data columns: {[col[0] for col in data_columns]}")
+            
+            # Clear only the data columns we'll update
+            for row in range(2, sheet.max_row + 1):
+                for col_name, col_idx in data_columns:
+                    sheet.cell(row=row, column=col_idx).value = None
+            
+            # Write new data
+            for row_idx, (_, row) in enumerate(lineups_df.iterrows(), start=2):
+                for col_name, col_idx in data_columns:
+                    if col_name in row.index:
+                        sheet.cell(row=row_idx, column=col_idx).value = row[col_name]
+            
+            # Restore formulas for existing rows
+            max_data_row = len(lineups_df) + 1
+            for row in range(2, min(max_data_row + 1, sheet.max_row + 1)):
+                if row in original_data:
+                    for col in formula_columns:
+                        if col in original_data[row] and original_data[row][col]['is_formula']:
+                            formula = original_data[row][col]['formula_value']
+                            sheet.cell(row=row, column=col).value = formula
+            
+            # For new rows beyond original data, copy formulas from the last template row
+            if max_data_row > len(original_data):
+                # Find the last row with formulas to use as template
+                template_row = None
+                for row in sorted(original_data.keys(), reverse=True):
+                    if any(original_data[row][col]['is_formula'] for col in formula_columns if col in original_data[row]):
+                        template_row = row
+                        break
+                
+                if template_row:
+                    # Copy formulas to new rows
+                    for new_row in range(len(original_data) + 1, max_data_row + 1):
+                        for col in formula_columns:
+                            if col in original_data[template_row] and original_data[template_row][col]['is_formula']:
+                                formula = original_data[template_row][col]['formula_value']
+                                # Adjust formula references
+                                adjusted_formula = adjust_formula_row_references(formula, template_row, new_row)
+                                sheet.cell(row=new_row, column=col).value = adjusted_formula
+            
+            # Preserve formulas for rows beyond the data
+            for row in range(max_data_row + 1, sheet.max_row + 1):
+                if row in original_data:
+                    for col in formula_columns:
+                        if col in original_data[row] and original_data[row][col]['is_formula']:
+                            formula = original_data[row][col]['formula_value']
+                            sheet.cell(row=row, column=col).value = formula
+        
+        # Save the workbook
+        wb.save(excel_path)
+        logger.info(f"Successfully updated {sheet_name} with formula preservation")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating {sheet_name}: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -7772,14 +7908,11 @@ def run_update():
             lineups_df = scrape_mlb_starting_lineups(today)
             
             if not lineups_df.empty:
-                # Standardize player names if we have reference data
-                if reference_df is not None:
-                    lineups_df = standardize_all_player_names(lineups_df, reference_df, 'Player')
-                    logger.info("Successfully standardized lineup data with unified approach")
-                
-                logger.info(f"Successfully scraped {len(lineups_df)} lineup entries for {today}")
-            else:
-                logger.warning("No lineup data found for today")
+                success = update_starting_lineups_with_formulas(EXCEL_FILE_PATH, lineups_df)
+                if success:
+                    logger.info("Successfully updated TodaysStartingLineups sheet with lineup data while preserving formulas")
+                else:
+                    logger.warning("Failed to update TodaysStartingLineups sheet")
                 lineups_df = pd.DataFrame()
                 
         except Exception as lineup_e:

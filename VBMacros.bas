@@ -140,7 +140,7 @@ Function PlayerProjection(l3yrs As Variant, curr As Variant, l7 As Variant, pitc
     defaultPitchWeight = 7.5
     
     Dim avgPitchWeight As Double
-    avgPitchWeight = Application.WorksheetFunction.Average(Sheets("Pitcher").Range("AP3:AP1000"))
+    avgPitchWeight = Application.WorksheetFunction.Average(Sheets("Pitcher").Range("AR3:AR2000"))
     
     ' Calculate base projection with dynamic weights
     Dim l3yrsWeight As Double, currWeight As Double, l7Weight As Double
