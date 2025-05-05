@@ -6307,6 +6307,14 @@ def get_handedness_splits(retry_attempts=3):
         "Pitcher vs LHB": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=5&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=P&sort=22,1&pageitems=2000000000&pg=0",
         "Pitcher vs RHB": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=6&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=P&sort=22,1&pageitems=2000000000&pg=0"
     }
+
+    # Alternative URLs with smaller page sizes for fallback
+    alt_urls = {
+        "Batter vs LHP": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=1&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=B&sort=22,1&pageitems=500&pg=0",
+        "Batter vs RHP": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=2&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=B&sort=22,1&pageitems=500&pg=0",
+        "Pitcher vs LHB": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=5&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=P&sort=22,1&pageitems=500&pg=0",
+        "Pitcher vs RHB": "https://www.fangraphs.com/leaders/splits-leaderboards?splitArr=6&splitArrPitch=&autoPt=false&splitTeams=false&statType=player&statgroup=1&startDate=2022-03-01&endDate=2025-11-01&players=&filter=G%7Cgt%7C1&groupBy=career&wxTemperature=&wxPressure=&wxAirDensity=&wxElevation=&wxWindSpeed=&position=P&sort=22,1&pageitems=500&pg=0"
+    }
     
     results = {}
     
@@ -8230,14 +8238,54 @@ def run_update():
         
     return True
     
-def schedule_daily_update(hour=6, minute=0):
-    """Schedule the update to run daily at the specified time"""
-    schedule.every().day.at(f"{hour:02d}:{minute:02d}").do(run_update)
-    logger.info(f"Scheduled daily update for {hour:02d}:{minute:02d}")
+def schedule_custom_update(hours=1, minutes=0):
+    """
+    Schedule updates at custom time intervals
     
+    Parameters:
+    hours (int): Hour interval (0-24)
+    minutes (int): Minute interval (0-59)
+    
+    If hours=24 and minutes=0, runs once daily at midnight
+    If hours=0 and minutes=30, runs every 30 minutes
+    If hours=6 and minutes=0, runs every 6 hours
+    """
+    # Calculate total minutes for the interval
+    total_mins = hours * 60 + minutes
+    
+    if total_mins < 1:
+        logger.error("Invalid schedule: interval must be at least 1 minute")
+        return
+        
+    interval = ""
+    if hours > 0:
+        interval += f"{hours} hour{'s' if hours != 1 else ''}"
+    if minutes > 0:
+        if interval:
+            interval += " and "
+        interval += f"{minutes} minute{'s' if minutes != 1 else ''}"
+    
+    logger.info(f"Scheduling updates every {interval}")
+    
+    # If 24 hours, schedule at 10 AM
+    if hours == 24 and minutes == 0:
+        schedule.every().day.at("10:00").do(run_update)
+        logger.info("Scheduled to run once daily at 10 AM")
+    else:
+        # Use every().minutes for flexible scheduling
+        schedule.every(total_mins).minutes.do(run_update)
+    
+    # Scheduling loop with error handling
     while True:
-        schedule.run_pending()
-        time.sleep(60)  # Check every minute
+        try:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            logger.error(f"Error in scheduling loop: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Add a sleep to prevent tight error loops
+            time.sleep(300)  # Wait 5 minutes before continuing
 
 def main():
     """Main entry point for the script"""
@@ -8245,9 +8293,9 @@ def main():
     
     parser = argparse.ArgumentParser(description='MLB Projections Data Updater')
     parser.add_argument('--run', action='store_true', help='Run the update immediately')
-    parser.add_argument('--schedule', action='store_true', help='Schedule daily updates')
-    parser.add_argument('--hour', type=int, default=6, help='Hour to run scheduled update (24-hour format)')
-    parser.add_argument('--minute', type=int, default=0, help='Minute to run scheduled update')
+    parser.add_argument('--schedule', action='store_true', help='Schedule recurring updates')
+    parser.add_argument('--hour', type=int, default=24, help='Hour interval (0-24, default=24 for daily)')
+    parser.add_argument('--minute', type=int, default=0, help='Minute interval (0-59, default=0)')
     parser.add_argument('--barrel-only', action='store_true', help='Run only the barrel data update')
     
     args = parser.parse_args()
@@ -8262,13 +8310,13 @@ def main():
         run_update()
     
     if args.schedule:
-        # Schedule daily updates
-        schedule_daily_update(args.hour, args.minute)
+        # Schedule custom updates based on hour and minute parameters
+        schedule_custom_update(args.hour, args.minute)
     
     if not args.run and not args.schedule and not args.barrel_only:
-        # If no arguments provided, run once and then schedule
+        # If no arguments provided, run once and then schedule daily
         run_update()
-        schedule_daily_update()
+        schedule_custom_update(1, 0)  # Default to hourly
 
 if __name__ == "__main__":
     main()

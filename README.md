@@ -65,9 +65,21 @@ cd MLBProjectionUpdater
 ```bash
 python MLBProjectionUpdater.py --run
 ```
-## Scheduling Daily Updates
+### Flexible Scheduling Options
+The script provides customizable schedule intervals:
 ```bash
+# Run every 6 hours
 python MLBProjectionUpdater.py --schedule --hour 6 --minute 0
+
+# Run hourly
+python MLBProjectionUpdater.py --schedule --hour 1 --minute 0
+
+# Run every 30 minutes
+python MLBProjectionUpdater.py --schedule --hour 0 --minute 30
+
+# Run once daily (default)
+python MLBProjectionUpdater.py --schedule
+
 ```
 
 ### Barrel data only
