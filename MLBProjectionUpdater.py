@@ -7921,7 +7921,6 @@ def run_update():
                     logger.info("Successfully updated TodaysStartingLineups sheet with lineup data while preserving formulas")
                 else:
                     logger.warning("Failed to update TodaysStartingLineups sheet")
-                lineups_df = pd.DataFrame()
                 
         except Exception as lineup_e:
             logger.error(f"Error scraping starting lineups: {str(lineup_e)}")
