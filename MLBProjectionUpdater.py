@@ -2487,7 +2487,7 @@ def get_probable_pitchers_espn():
             'MIN': 'MIN', 'Twins': 'MIN', 'Minnesota': 'MIN',
             'NYM': 'NYM', 'Mets': 'NYM', 'New York Mets': 'NYM',
             'NYY': 'NYY', 'Yankees': 'NYY', 'New York Yankees': 'NYY',
-            'OAK': 'OAK', 'Athletics': 'OAK', 'Oakland': 'OAK', 'A\'s': 'OAK',
+            'ATH': 'ATH', 'Athletics': 'ATH', 'Oakland': 'ATH', 'A\'s': 'ATH',
             'PHI': 'PHI', 'Phillies': 'PHI', 'Philadelphia': 'PHI',
             'PIT': 'PIT', 'Pirates': 'PIT', 'Pittsburgh': 'PIT',
             'SD': 'SD', 'Padres': 'SD', 'San Diego': 'SD', 'SDP': 'SD',
@@ -3049,7 +3049,7 @@ def update_park_factors():
             'Brewers': 'MIL',
             'Giants': 'SF',
             'Mariners': 'SEA',
-            'Athletics': 'OAK',
+            'Athletics': 'ATH',
             'Rays': 'TB'
         }
         
@@ -3151,7 +3151,7 @@ def update_park_factors():
                         
                         if ('Oakland' in str(team_name) or 'Athletics' in str(team_name) or 
                             'Sutter' in str(venue) or 'Sacramento' in str(venue)):
-                            team_code = 'OAK'
+                            team_code = 'ATH'
                             is_temp = True
                             logger.info(f"Found temporary stadium: {venue} for Athletics")
                         elif ('Tampa' in str(team_name) or 'Rays' in str(team_name) or 
