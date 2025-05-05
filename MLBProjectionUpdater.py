@@ -8238,9 +8238,10 @@ def run_update():
         
     return True
     
-def schedule_custom_update(hours=1, minutes=0):
+def schedule_custom_update(hours=24, minutes=0):
     """
-    Schedule updates at custom time intervals
+    Schedule updates at custom intervals
+    First update runs immediately, then follows the schedule.
     
     Parameters:
     hours (int): Hour interval (0-24)
@@ -8267,7 +8268,12 @@ def schedule_custom_update(hours=1, minutes=0):
     
     logger.info(f"Scheduling updates every {interval}")
     
-    # If 24 hours, schedule at 10 AM
+    # Run immediately first
+    logger.info("Running initial update before starting schedule...")
+    run_update()
+    logger.info("Initial update complete, now following schedule")
+    
+    # If exactly 24 hours, schedule at midnight
     if hours == 24 and minutes == 0:
         schedule.every().day.at("10:00").do(run_update)
         logger.info("Scheduled to run once daily at 10 AM")
