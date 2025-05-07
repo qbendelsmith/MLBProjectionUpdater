@@ -4966,7 +4966,7 @@ def download_fb_ld_event_data(output_folder="statcast_data", create_folder=True)
         
         # Create and configure the Chrome WebDriver
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        driver.set_page_load_timeout(120)  # 2 minute timeout for page load
+        driver.set_page_load_timeout(300)  # 300 sec timeout for page load
         
         page_load_start = time.time()
         logger.info(f"Navigating to FB+LD events page: {url}")
@@ -7527,6 +7527,18 @@ def run_update():
         import traceback
         logger.error(traceback.format_exc())
 
+    try:
+        logger.info("Running FB/LD event data update...")
+        fb_ld_result = run_fb_ld_update()
+        if fb_ld_result:
+            logger.info("Successfully updated FB/LD event data")
+        else:
+            logger.warning("Failed to update FB/LD event data")
+    except Exception as e:
+        logger.error(f"Error updating FB/LD event data: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+
     # Get park factors data
     try:
         logger.info("Updating park factors data...")
@@ -8105,6 +8117,7 @@ def main():
     parser.add_argument('--hour', type=int, default=24, help='Hour interval (0-24, default=24 for daily)')
     parser.add_argument('--minute', type=int, default=0, help='Minute interval (0-59, default=0)')
     parser.add_argument('--barrel-only', action='store_true', help='Run only the barrel data update')
+    parser.add_argument('--fb-ld-only', action='store_true', help='Run only the FB/LD event data update')
     
     args = parser.parse_args()
     
@@ -8125,6 +8138,11 @@ def main():
         # If no arguments provided, run once and then schedule daily
         run_update()
         schedule_custom_update(1, 0)  # Default to hourly
+    
+    if args.fb_ld_only:
+        # Run only FB/LD event data update
+        run_fb_ld_update()
+        return
 
 if __name__ == "__main__":
     main()

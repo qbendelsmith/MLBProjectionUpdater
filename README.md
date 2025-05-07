@@ -86,6 +86,12 @@ python MLBProjectionUpdater.py --schedule
 ```bash
 python MLBProjectionUpdater.py --barrel-only
 ```
+
+### Fly Ball and Line Drive Events only
+```bash
+python MLBProjectionUpdater.py --fb-ld-only
+```
+
 ## Command Line Options
 
 - `--run`: Run the update immediately
@@ -93,6 +99,7 @@ python MLBProjectionUpdater.py --barrel-only
 - `--hour`: Hour to run scheduled update (24-hour format)
 - `--minute`: Minute to run scheduled update
 - `--barrel-only`: Update only barrel data
+- `--fb-ld-only` : Update only fly ball and line drive event data
 
 ## Excel Sheets
 
