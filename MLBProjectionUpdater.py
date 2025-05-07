@@ -1346,29 +1346,32 @@ def process_splits_data(splits_dict, reference_df=None):
     
     return processed
 
-def update_excel_data_only(data_df, sheet_name, old_sheet_name=None):
+def update_excel_sheet(excel_path, data_df, sheet_name, preserve_formulas=True, old_sheet_name=None):
     """
-    Safely updates only the data in the specified sheet without deleting macros.
-    If the sheet doesn't exist but old_sheet_name is provided, renames that sheet.
-    If neither exists, creates a new sheet.
+    Unified function to update Excel sheets with options to preserve formulas
     
     Parameters:
+    excel_path (str): Path to the Excel file
     data_df (pandas DataFrame): New data to insert
     sheet_name (str): Name of the sheet to update
+    preserve_formulas (bool): Whether to preserve existing formulas
     old_sheet_name (str, optional): Old name of the sheet to rename if sheet_name doesn't exist
+    
+    Returns:
+    bool: True if successful, False otherwise
     """
-    logger.info(f"Safely updating data in sheet: {sheet_name}")
-
+    logger.info(f"Updating sheet '{sheet_name}' (preserve_formulas={preserve_formulas})")
+    
     try:
         # Check if file exists
-        if not os.path.exists(EXCEL_FILE_PATH):
-            logger.error(f"Excel file not found: {EXCEL_FILE_PATH}")
+        if not os.path.exists(excel_path):
+            logger.error(f"Excel file not found: {excel_path}")
             return False
 
         # Load workbook with VBA support
-        wb = openpyxl.load_workbook(EXCEL_FILE_PATH, keep_vba=True)
-
-        # Check if the sheet exists
+        wb = openpyxl.load_workbook(excel_path, keep_vba=True)
+        
+        # Handle sheet creation/renaming
         if sheet_name not in wb.sheetnames:
             logger.warning(f"Sheet '{sheet_name}' not found in workbook")
             
@@ -1384,28 +1387,123 @@ def update_excel_data_only(data_df, sheet_name, old_sheet_name=None):
         else:
             # Get the existing worksheet
             ws = wb[sheet_name]
+        
+        if preserve_formulas:
+            # Store all existing data and formulas
+            original_data = {}
+            formula_columns = set()
+            
+            # Get current headers and map to column indices
+            header_map = {}
+            for col in range(1, ws.max_column + 1):
+                header = ws.cell(row=1, column=col).value
+                if header:
+                    header_map[header] = col
+            
+            # Scan all cells to identify formulas
+            for row in range(1, ws.max_row + 1):
+                row_data = {}
+                for col in range(1, ws.max_column + 1):
+                    cell = ws.cell(row=row, column=col)
+                    is_formula = False
+                    formula_value = None
+                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
+                        is_formula = True
+                        formula_value = cell.value
+                        formula_columns.add(col)
+                    
+                    row_data[col] = {
+                        'value': cell.value,
+                        'is_formula': is_formula,
+                        'formula_value': formula_value
+                    }
+                
+                original_data[row] = row_data
+                
+            # Identify data columns to update (non-formula columns)
+            data_columns = []
+            for col_name in data_df.columns:
+                col_idx = None
+                if col_name in header_map:
+                    col_idx = header_map[col_name]
+                    if col_idx not in formula_columns:
+                        data_columns.append((col_name, col_idx))
+                else:
+                    # New column - add at the end
+                    next_col = max(header_map.values()) + 1 if header_map else 1
+                    data_columns.append((col_name, next_col))
+                    # Update header map for future column checks
+                    header_map[col_name] = next_col
+            
+            # Write headers first if sheet is new/empty
+            if ws.max_row <= 1 or ws.max_column <= 1:
+                for col_idx, col_name in enumerate(data_df.columns, 1):
+                    ws.cell(row=1, column=col_idx, value=col_name)
+            else:
+                # Clear only the data columns we'll update
+                for row in range(2, ws.max_row + 1):
+                    for col_name, col_idx in data_columns:
+                        ws.cell(row=row, column=col_idx).value = None
+            
+            # Write new data
+            for row_idx, (_, row) in enumerate(data_df.iterrows(), start=2):
+                for col_name, col_idx in data_columns:
+                    if col_name in row.index:
+                        ws.cell(row=row_idx, column=col_idx).value = row[col_name]
+            
+            # Restore formulas for existing rows
+            max_data_row = len(data_df) + 1
+            for row in range(2, min(max_data_row + 1, ws.max_row + 1)):
+                if row in original_data:
+                    for col in formula_columns:
+                        if col in original_data[row] and original_data[row][col]['is_formula']:
+                            formula = original_data[row][col]['formula_value']
+                            ws.cell(row=row, column=col).value = formula
+            
+            # For new rows beyond original data, copy formulas from the last template row
+            if max_data_row > len(original_data):
+                # Find the last row with formulas to use as template
+                template_row = None
+                for row in sorted(original_data.keys(), reverse=True):
+                    if any(original_data[row][col]['is_formula'] for col in formula_columns if col in original_data[row]):
+                        template_row = row
+                        break
+                
+                if template_row:
+                    # Copy formulas to new rows
+                    for new_row in range(len(original_data) + 1, max_data_row + 1):
+                        for col in formula_columns:
+                            if col in original_data[template_row] and original_data[template_row][col]['is_formula']:
+                                formula = original_data[template_row][col]['formula_value']
+                                # Adjust formula references
+                                adjusted_formula = adjust_formula_row_references(formula, template_row, new_row)
+                                ws.cell(row=new_row, column=col).value = adjusted_formula
+            
+            # Preserve formulas for rows beyond the data
+            for row in range(max_data_row + 1, ws.max_row + 1):
+                if row in original_data:
+                    for col in formula_columns:
+                        if col in original_data[row] and original_data[row][col]['is_formula']:
+                            formula = original_data[row][col]['formula_value']
+                            ws.cell(row=row, column=col).value = formula
+        else:
+            # Simple data update without formula preservation
+            # Clear existing sheet content (except headers)
+            if ws.max_row > 1:  # Only if there's data to clear
+                ws.delete_rows(2, ws.max_row)  # Delete all rows *after* the header
 
-        # Clear existing sheet content (except headers if needed)
-        logger.info(f"Clearing existing data in '{sheet_name}'")
-        if ws.max_row > 1:  # Only if there's data to clear
-            ws.delete_rows(2, ws.max_row)  # Delete all rows *after* the header
+            # Write DataFrame rows into the sheet
+            for col_idx, col_name in enumerate(data_df.columns, 1):
+                ws.cell(row=1, column=col_idx, value=col_name)
 
-        # Write DataFrame rows into the sheet starting from row 2
-        logger.info(f"Writing {len(data_df)} new rows into '{sheet_name}'")
-
-        # Write header manually
-        for col_idx, col_name in enumerate(data_df.columns, 1):
-            ws.cell(row=1, column=col_idx, value=col_name)
-
-        # Write each data row
-        for row_idx, row in enumerate(data_df.itertuples(index=False, name=None), start=2):
-            for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
-
+            # Write each data row
+            for row_idx, row in enumerate(data_df.itertuples(index=False, name=None), start=2):
+                for col_idx, value in enumerate(row, start=1):
+                    ws.cell(row=row_idx, column=col_idx, value=value)
+        
         # Save workbook safely
-        wb.save(EXCEL_FILE_PATH)
-        logger.info(f"Successfully updated '{sheet_name}' and saved {EXCEL_FILE_PATH}")
-
+        wb.save(excel_path)
+        logger.info(f"Successfully updated '{sheet_name}' and saved {excel_path}")
         return True
 
     except Exception as e:
@@ -1592,294 +1690,6 @@ def update_player_data():
         logger.error(traceback.format_exc())
         return False
     
-def update_probables_with_formulas(excel_path, probables_df, sheet_name="probables"):
-    """
-    Update probables sheet while preserving any existing formulas
-    
-    Parameters:
-    excel_path (str): Path to the Excel file
-    probables_df (pandas DataFrame): New probables data
-    sheet_name (str): Name of the sheet to update
-    
-    Returns:
-    bool: True if successful, False otherwise
-    """
-    logger.info(f"Updating {sheet_name} with formula preservation...")
-    
-    try:
-        # Load the workbook
-        wb = openpyxl.load_workbook(excel_path, keep_vba=True)
-        
-        # Check if the sheet exists
-        if sheet_name not in wb.sheetnames:
-            logger.info(f"Creating new sheet '{sheet_name}'")
-            sheet = wb.create_sheet(sheet_name)
-            
-            # Write headers
-            for col_idx, col_name in enumerate(probables_df.columns, 1):
-                sheet.cell(row=1, column=col_idx, value=col_name)
-            
-            # Write data
-            for row_idx, row in enumerate(probables_df.itertuples(index=False), start=2):
-                for col_idx, value in enumerate(row, start=1):
-                    sheet.cell(row=row_idx, column=col_idx, value=value)
-        else:
-            # Get the existing sheet
-            sheet = wb[sheet_name]
-            
-            # Store all existing data and formulas first
-            original_data = {}
-            for row in range(1, sheet.max_row + 1):
-                row_data = {}
-                for col in range(1, sheet.max_column + 1):
-                    cell = sheet.cell(row=row, column=col)
-                    is_formula = False
-                    formula_value = None
-                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                        is_formula = True
-                        formula_value = cell.value
-                    
-                    row_data[col] = {
-                        'value': cell.value,
-                        'is_formula': is_formula,
-                        'formula_value': formula_value
-                    }
-                
-                original_data[row] = row_data
-            
-            # Identify which columns contain formulas
-            formula_columns = set()
-            for row_data in original_data.values():
-                for col, cell_data in row_data.items():
-                    if cell_data['is_formula']:
-                        formula_columns.add(col)
-            
-            logger.info(f"Found formulas in columns: {sorted(formula_columns)}")
-            
-            # Get current headers
-            header_map = {}
-            for col in range(1, sheet.max_column + 1):
-                header = sheet.cell(row=1, column=col).value
-                if header:
-                    header_map[header] = col
-            
-            # Identify data columns from the DataFrame
-            data_columns = []
-            for col_name in probables_df.columns:
-                if col_name in header_map:
-                    col_idx = header_map[col_name]
-                    if col_idx not in formula_columns:
-                        data_columns.append((col_name, col_idx))
-            
-            logger.info(f"Will update data columns: {[col[0] for col in data_columns]}")
-            
-            # Clear only the data columns we'll update
-            for row in range(2, sheet.max_row + 1):
-                for col_name, col_idx in data_columns:
-                    sheet.cell(row=row, column=col_idx).value = None
-            
-            # Write new data
-            for row_idx, (_, row) in enumerate(probables_df.iterrows(), start=2):
-                for col_name, col_idx in data_columns:
-                    if col_name in row.index:
-                        sheet.cell(row=row_idx, column=col_idx).value = row[col_name]
-            
-            # Restore or copy formulas
-            max_data_row = len(probables_df) + 1
-            
-            # Restore formulas for existing rows
-            for row in range(2, min(max_data_row + 1, sheet.max_row + 1)):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-            
-            # For new rows beyond the original data, copy formulas from the last template row
-            if max_data_row > len(original_data):
-                # Find the last row with formulas to use as template
-                template_row = None
-                for row in sorted(original_data.keys(), reverse=True):
-                    has_formulas = False
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            has_formulas = True
-                            break
-                    if has_formulas:
-                        template_row = row
-                        break
-                
-                if template_row:
-                    # Copy formulas to new rows
-                    for new_row in range(len(original_data) + 1, max_data_row + 1):
-                        for col in formula_columns:
-                            if col in original_data[template_row] and original_data[template_row][col]['is_formula']:
-                                formula = original_data[template_row][col]['formula_value']
-                                # Adjust formula references
-                                adjusted_formula = adjust_formula_row_references(formula, template_row, new_row)
-                                sheet.cell(row=new_row, column=col).value = adjusted_formula
-            
-            # Preserve formulas for rows beyond the data
-            for row in range(max_data_row + 1, sheet.max_row + 1):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-        
-        # Save the workbook
-        wb.save(excel_path)
-        logger.info(f"Successfully updated {sheet_name} with formula preservation")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error updating {sheet_name}: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-    
-def update_splits_data_with_formulas(sheet_name, data_df):
-    """
-    Update splits data while preserving formulas, similar to update_player_data.
-    Carefully updates only the data columns while preserving formula columns.
-    
-    Parameters:
-    sheet_name (str): Name of the sheet to update
-    data_df (pandas DataFrame): New data to insert
-    
-    Returns:
-    bool: True if successful, False otherwise
-    """
-    logger.info(f"Updating {sheet_name} with formula preservation...")
-    
-    try:
-        # Load the workbook
-        wb = openpyxl.load_workbook(EXCEL_FILE_PATH, keep_vba=True)
-        
-        # Check if the sheet exists
-        if sheet_name not in wb.sheetnames:
-            logger.info(f"Creating new sheet '{sheet_name}'")
-            sheet = wb.create_sheet(sheet_name)
-            
-            # Write headers
-            for col_idx, col_name in enumerate(data_df.columns, 1):
-                sheet.cell(row=1, column=col_idx, value=col_name)
-            
-            # Write data
-            for row_idx, row in enumerate(data_df.itertuples(index=False), start=2):
-                for col_idx, value in enumerate(row, start=1):
-                    sheet.cell(row=row_idx, column=col_idx, value=value)
-        else:
-            # Get the existing sheet
-            sheet = wb[sheet_name]
-            
-            # Store all existing data and formulas first
-            original_data = {}
-            for row in range(2, sheet.max_row + 1):
-                row_data = {}
-                for col in range(1, sheet.max_column + 1):
-                    cell = sheet.cell(row=row, column=col)
-                    is_formula = False
-                    formula_value = None
-                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                        is_formula = True
-                        formula_value = cell.value
-                    
-                    row_data[col] = {
-                        'value': cell.value,
-                        'is_formula': is_formula,
-                        'formula_value': formula_value
-                    }
-                
-                original_data[row] = row_data
-            
-            # Identify which columns contain formulas (like wOBA)
-            formula_columns = set()
-            for row_data in original_data.values():
-                for col, cell_data in row_data.items():
-                    if cell_data['is_formula']:
-                        formula_columns.add(col)
-            
-            logger.info(f"Found formulas in columns: {sorted(formula_columns)}")
-            
-            # Identify columns to update (non-formula columns from the data)
-            header_map = {}
-            for col in range(1, sheet.max_column + 1):
-                header = sheet.cell(row=1, column=col).value
-                if header:
-                    header_map[header] = col
-            
-            columns_to_update = []
-            for col_name in data_df.columns:
-                if col_name in header_map:
-                    col_idx = header_map[col_name]
-                    if col_idx not in formula_columns:
-                        columns_to_update.append((col_name, col_idx))
-            
-            logger.info(f"Will update columns: {[col[0] for col in columns_to_update]}")
-            
-            # Clear only the data columns we'll update
-            for row in range(2, sheet.max_row + 1):
-                for col_name, col_idx in columns_to_update:
-                    sheet.cell(row=row, column=col_idx).value = None
-            
-            # Write new data
-            for row_idx, (_, row) in enumerate(data_df.iterrows(), start=2):
-                for col_name, col_idx in columns_to_update:
-                    if col_name in row.index:
-                        sheet.cell(row=row_idx, column=col_idx).value = row[col_name]
-            
-            # Restore formulas for existing rows
-            max_data_row = len(data_df) + 1
-            for row in range(2, min(max_data_row + 1, sheet.max_row + 1)):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-            
-            # For new rows, copy formulas from the last row with formulas
-            if max_data_row > len(original_data) + 1:
-                # Find the last row with formulas
-                template_row = None
-                for row in sorted(original_data.keys(), reverse=True):
-                    has_formulas = False
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            has_formulas = True
-                            break
-                    if has_formulas:
-                        template_row = row
-                        break
-                
-                if template_row:
-                    # Copy formulas to new rows
-                    for new_row in range(len(original_data) + 2, max_data_row + 1):
-                        for col in formula_columns:
-                            if col in original_data[template_row] and original_data[template_row][col]['is_formula']:
-                                formula = original_data[template_row][col]['formula_value']
-                                # Adjust formula references
-                                adjusted_formula = adjust_formula_row_references(formula, template_row, new_row)
-                                sheet.cell(row=new_row, column=col).value = adjusted_formula
-            
-            # Preserve formulas for rows beyond the data
-            for row in range(max_data_row + 1, sheet.max_row + 1):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-        
-        # Save the workbook
-        wb.save(EXCEL_FILE_PATH)
-        logger.info(f"Successfully updated {sheet_name} with formula preservation")
-        return True
-    
-    except Exception as e:
-        logger.error(f"Error updating {sheet_name}: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
 
 def adjust_formula_row_references(formula, old_row, new_row):
     """
@@ -3332,7 +3142,6 @@ def get_team_batting_stats(year=None):
     Returns:
     pandas DataFrame: Team batting stats with DK_Points calculations
     """
-    logger = logging.getLogger("MLB Updater")
     logger.info(f"Getting team batting stats for year: {year or 'current'}")
     
     try:
@@ -3383,7 +3192,6 @@ def calculate_team_dk_points(teams_df):
     Returns:
     pandas DataFrame: Original DataFrame with DK_Points column added
     """
-    logger = logging.getLogger("MLB Updater")
     
     if teams_df.empty:
         return teams_df
@@ -3486,7 +3294,6 @@ def update_team_hitting_sheet(excel_path, team_stats_df, sheet_name="FGTmHitting
     Returns:
     bool: True if successful, False otherwise
     """
-    logger = logging.getLogger("MLB Updater")
     logger.info(f"Updating {sheet_name} sheet with team batting stats")
     
     if team_stats_df.empty:
@@ -6661,7 +6468,7 @@ def process_splits_data(splits_dict, reference_df=None):
 
 def update_splits_sheets(excel_path, processed_splits):
     """
-    Update Excel sheets with handedness splits data, preserving formulas
+    Update Excel sheets with handedness splits data, using the consolidated update function
     
     Parameters:
     excel_path (str): Path to the Excel file
@@ -6681,6 +6488,9 @@ def update_splits_sheets(excel_path, processed_splits):
             "Pitcher vs RHB": "PitcherVsRHB"
         }
         
+        # Track overall success
+        overall_success = True
+        
         # Update each sheet
         for split_type, df in processed_splits.items():
             if df.empty:
@@ -6694,15 +6504,21 @@ def update_splits_sheets(excel_path, processed_splits):
                 
             logger.info(f"Updating {sheet_name} sheet with {len(df)} rows")
             
-            # Use formula-preserving function
-            success = update_splits_data_with_formulas(sheet_name, df)
+            # Use our consolidated function with formula preservation
+            success = update_excel_sheet(
+                excel_path=excel_path,
+                data_df=df,
+                sheet_name=sheet_name,
+                preserve_formulas=True  # We want to preserve any existing formulas
+            )
             
             if success:
                 logger.info(f"Successfully updated {sheet_name} sheet with formula preservation")
             else:
                 logger.warning(f"Failed to update {sheet_name} sheet")
+                overall_success = False
         
-        return True
+        return overall_success
         
     except Exception as e:
         logger.error(f"Error updating splits sheets: {str(e)}")
@@ -6836,10 +6652,6 @@ def calculate_adjusted_projections(excel_path=EXCEL_FILE_PATH, sheet_name="Hitte
         
         # Calculate league averages from the current slate
         league_averages = calculate_slate_averages(hitter_df)
-        
-        logger.info(f"Calculated league averages for slate:")
-        for stat, avg in league_averages.items():
-            logger.info(f"  {stat}: {avg:.3f}")
         
         # Define weights, tweak to your liking
         weights = {
@@ -7551,8 +7363,13 @@ def update_starting_lineups_sheet(excel_path=EXCEL_FILE_PATH, date_str=None):
             lineups_df = standardize_all_player_names(lineups_df, reference_df, 'Player')
             logger.info("Standardized player names in lineup data")
         
-        # Update Excel sheet with formula preservation
-        success = update_starting_lineups_with_formulas(excel_path, lineups_df)
+        # Update Excel sheet with formula preservation using consolidated function
+        success = update_excel_sheet(
+            excel_path=excel_path,
+            data_df=lineups_df,
+            sheet_name="TodaysStartingLineups",
+            preserve_formulas=True
+        )
         
         if success:
             logger.info(f"Successfully updated TodaysStartingLineups with {len(lineups_df)} entries")
@@ -7566,139 +7383,9 @@ def update_starting_lineups_sheet(excel_path=EXCEL_FILE_PATH, date_str=None):
         import traceback
         logger.error(traceback.format_exc())
         return False
-    
-def update_starting_lineups_with_formulas(excel_path, lineups_df, sheet_name="TodaysStartingLineups"):
-    """
-    Update TodaysStartingLineups sheet while preserving any existing formulas (like VLOOKUP)
-    
-    Parameters:
-    excel_path (str): Path to the Excel file
-    lineups_df (pandas DataFrame): New lineup data
-    sheet_name (str): Name of the sheet to update
-    
-    Returns:
-    bool: True if successful, False otherwise
-    """
-    logger.info(f"Updating {sheet_name} with formula preservation...")
-    
-    try:
-        # Load the workbook
-        wb = openpyxl.load_workbook(excel_path, keep_vba=True)
-        
-        # Check if the sheet exists
-        if sheet_name not in wb.sheetnames:
-            logger.info(f"Creating new sheet '{sheet_name}'")
-            sheet = wb.create_sheet(sheet_name)
-            
-            # Write headers
-            for col_idx, col_name in enumerate(lineups_df.columns, 1):
-                sheet.cell(row=1, column=col_idx, value=col_name)
-            
-            # Write data
-            for row_idx, row in enumerate(lineups_df.itertuples(index=False), start=2):
-                for col_idx, value in enumerate(row, start=1):
-                    sheet.cell(row=row_idx, column=col_idx, value=value)
-        else:
-            # Get the existing sheet
-            sheet = wb[sheet_name]
-            
-            # Store all existing data and formulas first
-            original_data = {}
-            formula_columns = set()
-            
-            # Check all cells to identify formulas
-            for row in range(1, sheet.max_row + 1):
-                row_data = {}
-                for col in range(1, sheet.max_column + 1):
-                    cell = sheet.cell(row=row, column=col)
-                    is_formula = False
-                    formula_value = None
-                    if cell.value and isinstance(cell.value, str) and cell.value.startswith('='):
-                        is_formula = True
-                        formula_value = cell.value
-                        formula_columns.add(col)
-                    
-                    row_data[col] = {
-                        'value': cell.value,
-                        'is_formula': is_formula,
-                        'formula_value': formula_value
-                    }
-                
-                original_data[row] = row_data
-            
-            logger.info(f"Found formulas in columns: {sorted(formula_columns)}")
-            
-            # Get current headers and map to dataframe columns
-            header_map = {}
-            for col in range(1, sheet.max_column + 1):
-                header = sheet.cell(row=1, column=col).value
-                if header:
-                    header_map[header] = col
-            
-            # Identify which columns to update (those without formulas)
-            data_columns = []
-            for col_name in lineups_df.columns:
-                if col_name in header_map:
-                    col_idx = header_map[col_name]
-                    if col_idx not in formula_columns:
-                        data_columns.append((col_name, col_idx))
-            
-            logger.info(f"Will update data columns: {[col[0] for col in data_columns]}")
-            
-            # Clear only the data columns we'll update
-            for row in range(2, sheet.max_row + 1):
-                for col_name, col_idx in data_columns:
-                    sheet.cell(row=row, column=col_idx).value = None
-            
-            # Write new data
-            for row_idx, (_, row) in enumerate(lineups_df.iterrows(), start=2):
-                for col_name, col_idx in data_columns:
-                    if col_name in row.index:
-                        sheet.cell(row=row_idx, column=col_idx).value = row[col_name]
-            
-            # Restore formulas for existing rows
-            max_data_row = len(lineups_df) + 1
-            for row in range(2, min(max_data_row + 1, sheet.max_row + 1)):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-            
-            # For new rows beyond original data, copy formulas from the last template row
-            if max_data_row > len(original_data):
-                # Find the last row with formulas to use as template
-                template_row = None
-                for row in sorted(original_data.keys(), reverse=True):
-                    if any(original_data[row][col]['is_formula'] for col in formula_columns if col in original_data[row]):
-                        template_row = row
-                        break
-                
-                if template_row:
-                    # Copy formulas to new rows
-                    for new_row in range(len(original_data) + 1, max_data_row + 1):
-                        for col in formula_columns:
-                            if col in original_data[template_row] and original_data[template_row][col]['is_formula']:
-                                formula = original_data[template_row][col]['formula_value']
-                                # Adjust formula references
-                                adjusted_formula = adjust_formula_row_references(formula, template_row, new_row)
-                                sheet.cell(row=new_row, column=col).value = adjusted_formula
-            
-            # Preserve formulas for rows beyond the data
-            for row in range(max_data_row + 1, sheet.max_row + 1):
-                if row in original_data:
-                    for col in formula_columns:
-                        if col in original_data[row] and original_data[row][col]['is_formula']:
-                            formula = original_data[row][col]['formula_value']
-                            sheet.cell(row=row, column=col).value = formula
-        
-        # Save the workbook
-        wb.save(excel_path)
-        logger.info(f"Successfully updated {sheet_name} with formula preservation")
-        return True
         
     except Exception as e:
-        logger.error(f"Error updating {sheet_name}: {str(e)}")
+        logger.error(f"Error updating starting lineups sheet: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -7769,6 +7456,10 @@ def run_update():
     """
     logger.info("Starting MLB projections update")
     global EXCEL_FILE_PATH, BACKUP_FOLDER
+
+    # Initialize variables for later
+    pitcher_df = pd.DataFrame(columns=['Name', 'Starting'])
+    offense_df = pd.DataFrame(columns=['TeamCode', 'OffenseScore'])
     
     # Create a backup first
     if not create_backup():
@@ -7916,7 +7607,13 @@ def run_update():
             lineups_df = scrape_mlb_starting_lineups(today)
             
             if not lineups_df.empty:
-                success = update_starting_lineups_with_formulas(EXCEL_FILE_PATH, lineups_df)
+                # Use our consolidated function with formula preservation
+                success = update_excel_sheet(
+                    excel_path=EXCEL_FILE_PATH,
+                    data_df=lineups_df,
+                    sheet_name="TodaysStartingLineups",
+                    preserve_formulas=True
+                )
                 if success:
                     logger.info("Successfully updated TodaysStartingLineups sheet with lineup data while preserving formulas")
                 else:
@@ -7980,25 +7677,122 @@ def run_update():
         original_file = EXCEL_FILE_PATH
         EXCEL_FILE_PATH = working_copy
         
-        # Update Excel sheets with openpyxl
+        # Update Excel sheets using consolidated function
         if not hitters_season.empty:
-            update_excel_data_only(hitters_season, "FGHitters")
-        
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=hitters_season,
+                sheet_name="FGHitters",
+                preserve_formulas=False
+            )
+
         if not hitters_last7.empty:
-            update_excel_data_only(hitters_last7, "FGHittersL7")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=hitters_last7,
+                sheet_name="FGHittersL7",
+                preserve_formulas=False
+            )
             
         if not hitters_last3years.empty:
-            update_excel_data_only(hitters_last3years, "FGHittersL3Yrs")
-        
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=hitters_last3years,
+                sheet_name="FGHittersL3Yrs",
+                preserve_formulas=False
+            )
+
         if not pitchers_season.empty:
-            update_excel_data_only(pitchers_season, "FGPitchers")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=pitchers_season,
+                sheet_name="FGPitchers",
+                preserve_formulas=False
+            )
             
         if not pitchers_last30.empty:
-            update_excel_data_only(pitchers_last30, "FGPitchersL30")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=pitchers_last30,
+                sheet_name="FGPitchersL30",
+                preserve_formulas=False
+            )
             
         if not pitchers_last3years.empty:
             # Update with the old sheet name as a fallback
-            update_excel_data_only(pitchers_last3years, "FGPitchersL3Yrs", old_sheet_name="FGPitchers2018")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=pitchers_last3years,
+                sheet_name="FGPitchersL3Yrs",
+                preserve_formulas=False,
+                old_sheet_name="FGPitchers2018"
+            )
+
+        if not dk_salaries.empty:
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=dk_salaries,
+                sheet_name="Salaries",
+                preserve_formulas=False
+            )
+
+        if not probable_pitchers.empty:
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=probable_pitchers,
+                sheet_name="probables",
+                preserve_formulas=True
+            )
+
+        # Update Handedness sheet with player handedness data
+        if not player_handedness.empty:
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=player_handedness,
+                sheet_name="Handedness",
+                preserve_formulas=False
+            )
+
+        if not lineups_df.empty:
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=lineups_df,
+                sheet_name="TodaysStartingLineups",
+                preserve_formulas=True
+            )
+
+        # Update starter flags sheet - with safety checks
+        if 'pitcher_df' in locals() and not pitcher_df.empty and 'Name' in pitcher_df.columns and 'Starting' in pitcher_df.columns:
+            flag_df = pitcher_df[['Name', 'Starting']].copy()
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=flag_df,
+                sheet_name="PitcherStartingFlag",
+                preserve_formulas=False
+            )
+            logger.info("Updated PitcherStartingFlag sheet")
+        else:
+            logger.warning("Skipping PitcherStartingFlag update - pitcher_df not properly defined")
+
+        # Update offense sheet - with safety checks
+        if 'offense_df' in locals() and not offense_df.empty and 'TeamCode' in offense_df.columns and 'OffenseScore' in offense_df.columns:
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=offense_df,
+                sheet_name="TeamOffense",
+                preserve_formulas=False
+            )
+            logger.info("Updated TeamOffense sheet")
+        else:
+            logger.warning("Skipping TeamOffense update - offense_df not properly defined")
+
+        # Update offense sheet
+        update_excel_sheet(
+            excel_path=EXCEL_FILE_PATH,
+            data_df=offense_df,
+            sheet_name="TeamOffense",
+            preserve_formulas=False
+        )
         
         # Update team batting stats
         if not team_batting_stats.empty:
@@ -8007,18 +7801,27 @@ def run_update():
             logger.info("Successfully updated team batting stats sheet")
         
         if not dk_salaries.empty:
-            update_excel_data_only(dk_salaries, "Salaries")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=dk_salaries,
+                sheet_name="Salaries",
+                preserve_formulas=False)
         
         if not probable_pitchers.empty:
-            update_probables_with_formulas(EXCEL_FILE_PATH, probable_pitchers, "probables")
+            update_excel_sheet(
+                excel_path=EXCEL_FILE_PATH,
+                data_df=probable_pitchers,
+                sheet_name="probables",
+                preserve_formulas=True
+            )
         
         # Update Handedness sheet with player handedness data
         if not player_handedness.empty:
-            update_excel_data_only(player_handedness, "Handedness")
+            update_excel_sheet(EXCEL_FILE_PATH, player_handedness, "Handedness", preserve_formulas=False)
             logger.info("Successfully updated Handedness sheet with player handedness data")
 
         if not lineups_df.empty:
-            update_excel_data_only(lineups_df, "TodaysStartingLineups")
+            update_excel_sheet(EXCEL_FILE_PATH, lineups_df, "TodaysStartingLineups", preserve_formulas=True)
             logger.info("Successfully updated TodaysStartingLineups sheet with lineup data")
         
         # Also update the Statcast sheet in the working copy
@@ -8158,7 +7961,7 @@ def run_update():
                     
                     # Create a starter flag sheet
                     flag_df = pitcher_df[['Name', 'Starting']].copy()
-                    update_excel_data_only(flag_df, "PitcherStartingFlag")
+                    update_excel_sheet(EXCEL_FILE_PATH, flag_df, "PitcherStartingFlag", preserve_formulas=False)
                     logger.info("Created PitcherStartingFlag sheet with starting pitcher indicators")
                 except Exception as flag_e:
                     logger.error(f"Error creating starter flags: {str(flag_e)}")
@@ -8199,7 +8002,7 @@ def run_update():
                     })
                     
                     # Update offense sheet
-                    update_excel_data_only(offense_df, "TeamOffense")
+                    update_excel_sheet(EXCEL_FILE_PATH, offense_df, "TeamOffense", preserve_formulas=False)
                     logger.info(f"Created TeamOffense sheet with {len(offense_df)} team offensive metrics")
         except Exception as offense_e:
             logger.error(f"Error calculating offensive metrics: {str(offense_e)}")
