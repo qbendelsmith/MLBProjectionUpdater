@@ -1,3 +1,5 @@
+# *DEPRECATED- ACTIVELY WORKING ON A SOLUTION*
+
 # MLB DFS Projection Updater
 
 A comprehensive Python project for the aggregation, processing, and analyzing of MLB data to create DFS projections with a focus on automating the process of data gathering.
